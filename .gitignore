@@ -1,0 +1,10 @@
+# Build output
+/server
+/client
+*.o
+*.obj
+*.exe
+*.pdb
+
+# Local editor settings
+.vscode/
