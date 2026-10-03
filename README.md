@@ -29,6 +29,10 @@ All pthread workers consume requests from the same request queue and share the s
 
 Every client sends to the shared request queue. The server uses the request's `client_id` to open that client's response queue and return a result. Concurrent clients must use unique IDs so that each owns a distinct response queue.
 
+The server owns creation and unlinking of `/request_queue`; each client owns creation and unlinking of its response queue. Both use `O_CREAT | O_EXCL`: a second process cannot silently replace a live queue. A stale queue after forced termination must be removed explicitly, as described below. Only one server runs in a queue namespace.
+
+Both queue types have `mq_maxmsg = 10`. The request queue uses `mq_msgsize = sizeof(RequestMessage)` and responses use `mq_msgsize = sizeof(ResponseMessage)`. Sends use these same sizes; receives reject unexpected byte counts. Clients validate the request queue attributes, and workers validate response queue attributes. Every message is sent at priority zero, so pending requests of equal priority are received in enqueue order; different workers can finish those requests in a different order.
+
 ## 4. Message Structure
 
 `RequestMessage` contains:
@@ -43,7 +47,11 @@ Every client sends to the shared request queue. The server uses the request's `c
 - `success`: reports whether the operation succeeded.
 - `message`: a fixed-size character buffer containing the result.
 
+The enum values are `LIST=1`, `STATUS=2`, `RESERVE=3`, `CANCEL=4`, and `QUIT=5`. IDs use `int`, success uses `bool`, and the text buffer is `char[1024]`. `LIST` sets `resource_id = -1`. `QUIT` is handled locally by the client; it is not sent to the server. The server reserves `QUIT` with `client_id = -1` for its internal worker shutdown messages.
+
 The queue payloads use fixed-size, raw-memory-compatible fields because POSIX Message Queues transfer byte buffers. `std::string` is not stored directly in a queue message because it contains process-local dynamic state.
+
+Both structures are checked to be trivially copyable. Raw messages include native padding and require the same compiler ABI and structure definitions, supplied by building server and clients together in one Linux image. This is not a portable wire protocol between different builds or architectures.
 
 ## 5. Supported Commands
 
@@ -57,11 +65,14 @@ QUIT                    Exit the client.
 
 Valid resource IDs are 1 through 20.
 
+Commands are uppercase. Missing arguments, malformed or overflowing integer tokens, unknown commands, and extra arguments are rejected. The server remains authoritative for the resource range and ownership checks. Clients print `SUCCESS:` or `FAILED:` for responses. `QUIT` and input EOF both close descriptors and unlink the client's response queue.
+
 ## 6. Build Locally on Linux or WSL
 
 This project targets Linux or WSL because it uses POSIX Message Queues.
 
 ```bash
+make clean
 make
 ```
 
@@ -79,6 +90,15 @@ Start the server before starting clients:
 ./client 1
 ```
 
+Full syntax:
+
+```text
+./server --workers <positive_integer> --sync|--no-sync
+./client <positive_integer_client_id>
+```
+
+The worker count is selected at runtime; at least three workers and five unique clients are supported. Both integer arguments reject overflow, leading whitespace, and a leading `+`. Client IDs do not have to be consecutive. `-std=c++17 -Wall -Wextra -Wpedantic` is used for both programs, with `-pthread` for the server and `-lrt` for POSIX MQ linkage. Windows MinGW alone cannot build the Linux POSIX MQ project; use this Docker image or a Linux/WSL development environment.
+
 ## 7. Docker Build
 
 ```bash
@@ -87,6 +107,8 @@ docker build -t os-reservation .
 
 The image uses Ubuntu 24.04, installs `build-essential`, and builds both binaries with `make`.
 
+Its working directory is `/app`, and its default command is `sleep infinity`, allowing the presenter to choose each experiment mode manually. `.dockerignore` excludes Git metadata, editor settings, and local binaries.
+
 ## 8. Docker Run
 
 Create one named, long-running demo container:
@@ -94,6 +116,8 @@ Create one named, long-running demo container:
 ```bash
 docker run -dit --name os-reservation os-reservation
 ```
+
+If that name already belongs to an old, stopped demo container, remove the old container with `docker rm os-reservation` before creating the new one. A rebuilt image does not update an existing container; recreate the demo container to use changed source.
 
 The standard Linux Docker runtime provides `/dev/mqueue` inside the container. No privileged mode or host IPC namespace is required because the server and all clients run in the same container. Verify the mount with:
 
@@ -131,6 +155,8 @@ Open five more terminals and run one unique client in each:
 
 Have several clients submit `RESERVE 10`. With one worker, requests are processed sequentially even though clients may submit concurrently. One request succeeds and later requests observe that Seat 10 is already reserved; no worker race occurs.
 
+Before each next experiment: finish pending commands, enter `QUIT` in every client terminal, press `Ctrl+C` in the server terminal, then start the new server and reopen clients 1–5. Restarting the server resets every seat to AVAILABLE. Reusing Seat 10 without resetting state will invalidate the experiment.
+
 ## 11. Experiment 2 — Concurrent Without Synchronization
 
 In Terminal 1:
@@ -147,18 +173,20 @@ random delay of 50–500 ms
 update owner
 ```
 
-A possible server log is:
+An excerpt actually recorded during finalization is:
 
 ```text
-[Worker-1] check Seat 10: AVAILABLE
-[Worker-2] check Seat 10: AVAILABLE
-[Worker-1] delaying 240 ms
-[Worker-2] delaying 410 ms
-[Worker-1] Seat 10 reserved by Client-1
-[Worker-2] Seat 10 reserved by Client-2
+[0003] [Worker-1] check Seat 10: AVAILABLE
+[0006] [Worker-2] check Seat 10: AVAILABLE
+[0009] [Worker-3] check Seat 10: AVAILABLE
+[0011] [Worker-3] Seat 10 reserved by Client-4
+[0016] [Worker-1] Seat 10 reserved by Client-1
+[0017] [Worker-2] Seat 10 reserved by Client-3
 ```
 
 Multiple clients may receive `SUCCESS`, although the final table contains only the owner written last. The random delay exists only to make the race condition easier to observe; no particular client is guaranteed to win.
+
+The observed run had three successes and two failures. For the live demo, show multiple workers checking AVAILABLE before the first update, multiple client successes, then `STATUS 10` or `LIST` to show the single final owner. If a race is not observed, reset the server and retry; absence of a race in one run is not proof of safety.
 
 ## 12. Experiment 3 — Concurrent With Synchronization
 
@@ -180,15 +208,14 @@ unlock
 
 Exactly one client should succeed. Later workers enter the critical section only after the first worker leaves and therefore observe the resource as reserved.
 
+The same 50–500 ms delay is still executed while holding `reservations_mutex`. The observed finalization run had one success and four failures. The following actual excerpt shows the successful sequence; intervening received-request logs are omitted here:
+
 ```text
-[Worker-1] entering critical section
-[Worker-1] check Seat 10: AVAILABLE
-[Worker-1] delaying 275 ms
-[Worker-1] Seat 10 reserved by Client-1
-[Worker-1] leaving critical section
-[Worker-2] entering critical section
-[Worker-2] check Seat 10: RESERVED by Client-1
-[Worker-2] leaving critical section
+[0004] [Worker-1] check Seat 10: AVAILABLE
+[0005] [Worker-1] delaying 246 ms
+[0008] [Worker-1] Seat 10 reserved by Client-1
+[0012] [Worker-2] check Seat 10: RESERVED by Client-1
+[0015] [Worker-3] check Seat 10: RESERVED by Client-1
 ```
 
 ## 13. Synchronization Toggle
@@ -207,6 +234,8 @@ Enable reservation-table synchronization:
 
 `log_mutex` remains active in both modes, but it protects only console output from interleaving. `--no-sync` disables synchronization of shared reservation data; it does not mean that every mutex is removed.
 
+All server log lines carry a sequence number incremented under `log_mutex`. Worker request logs include command, client ID, and resource ID where applicable. Reservation critical-section entry/exit logs are emitted only with `--sync`. Sequence numbers describe console-log order, not the exact instant of an unprotected memory read.
+
 ## 14. Shared Resource and Critical Sections
 
 The shared resource is:
@@ -222,11 +251,19 @@ The reservation critical sections are:
 - `STATUS`: copy the current owner.
 - `LIST`: copy all ownership values into a local snapshot.
 
+An `owner_id` of `-1` means AVAILABLE; a positive ID means RESERVED. Response formatting, opening/checking response queues, and sending responses occur outside `reservations_mutex`. The local LIST snapshot keeps the synchronized read consistent while avoiding holding the lock during text formatting. In no-sync mode its reads are intentionally unprotected and need not form a consistent snapshot.
+
+Workers use `pthread_create` and receive addresses in a pre-sized `vector<int> worker_ids`. Neither vector is resized after thread creation, and their storage remains valid until the created workers have joined. A thread-local random generator avoids sharing generator state between workers.
+
 The message queue serializes queue operations, not the work performed after different workers receive requests. Therefore, the queue alone cannot prevent races on `reservations[]`.
 
 ## 15. Graceful Shutdown
 
-Press `Ctrl+C` in the server terminal. The main thread receives SIGINT through `sigwait()`, sends one internal stop request per worker, joins every worker, closes the request queue, and unlinks `/request_queue`.
+Press `Ctrl+C` in the server terminal. SIGINT and SIGTERM are blocked before thread creation so the workers inherit the mask. The main thread receives the shutdown signal through `sigwait()`, sends one internal stop request per created worker, joins every worker, closes the request queue, and unlinks `/request_queue`.
+
+Already queued requests precede the priority-zero stop messages. Finish client commands before stopping the server; do not keep submitting during shutdown. The response send is nonblocking so an abandoned/full client queue cannot stall a worker. A full queue produces a logged delivery error; this does not roll back an already completed reservation.
+
+Partial `pthread_create` failure takes the same stop/join path for workers that did start, then returns failure after cleanup. Shutdown sends have a five-second deadline. If a stop message cannot be sent or a worker cannot be joined, the server reports failure, unlinks its queue, and exits the process without destroying mutexes or argument storage still used by a live worker. Normal shutdown joins all workers first.
 
 ## 16. Cleanup and Troubleshooting
 
@@ -236,7 +273,18 @@ Inspect active POSIX Message Queue names:
 ls /dev/mqueue
 ```
 
-The server removes a previous `/request_queue` name during startup and removes its own queue during graceful shutdown. Start the server before clients. If a client reports `mq_open: No such file or directory`, the request queue does not exist because the server is not running.
+Start the server before clients. If a client reports `mq_open: No such file or directory`, the request queue does not exist because the server is not running. Client failure to open the request queue also removes the response queue it created.
+
+`File exists` means a server/client with that queue name is still active, or a previous process was forcibly killed. Do not unlink an active process's queue. After verifying the owning processes have exited, remove only the stale name, for example inside the demo container:
+
+```bash
+rm -f /dev/mqueue/request_queue
+rm -f /dev/mqueue/response_3
+```
+
+`Ctrl+C` on a client or `SIGKILL` is abrupt termination and may leave a response queue; prefer `QUIT` or EOF. Server `SIGKILL` also bypasses its cleanup. A new container provides a fresh queue namespace.
+
+If `Permission denied` occurs, run clients/server as the same container user. If `/dev/mqueue` is missing, check the Linux Docker runtime and use one shared container. If queue attributes are rejected, rebuild both binaries and remove stale queues after their owners stop. If a client is waiting after a server crash, terminate that client and clean its stale response queue before restarting.
 
 Stop and remove the Docker demo container with:
 
@@ -251,3 +299,46 @@ docker rm -f os-reservation
 - Synchronized mode uses one global reservation mutex rather than per-resource locks.
 - The system is intended for a local Linux, WSL, or single-container Docker demonstration.
 - No persistent database is used.
+- Unsynchronized concurrent reads/writes are deliberately C++ data races (formally undefined behavior). Race reproduction is an observed property of the tested Linux build, not a guarantee for every scheduler, compiler, or optimization setting. Use `--sync` for correct operation.
+- The 50–500 ms delay is an experiment aid, not real reservation work. In sync mode it serializes all seat operations behind one global lock.
+- Queue capacity is ten messages. A client sends one request and waits for one response; it has no response timeout or automatic recovery if the server exits or delivery fails. A completed reservation can outlive a lost response.
+- Queue names and client IDs are intended for trusted local processes. The native structures and internal stop request are not an authenticated or cross-platform protocol.
+- Forced termination requires explicit stale-queue cleanup. Clients must restart after the server restarts because existing descriptors refer to the old queue object.
+
+## 18. Experiment Script
+
+Run all three experiments automatically in a fresh temporary container:
+
+```bash
+docker build -t os-reservation .
+docker run --rm os-reservation bash experiments.sh
+```
+
+To run only one experiment, pass `1`, `2`, or `3`:
+
+```bash
+docker run --rm os-reservation bash experiments.sh 1
+docker run --rm os-reservation bash experiments.sh 2
+docker run --rm os-reservation bash experiments.sh 3
+```
+
+On Linux, run `bash experiments.sh` from the project directory. The script builds the programs, starts a fresh server for each experiment, launches five clients concurrently to reserve Seat 10, displays server logs and client results, and checks the final owner with STATUS. Experiments 1 and 3 require one success and four failures. Experiment 2 retries up to five times and reports if the race was not observed without treating nondeterminism as a test failure. All test processes, queues, and temporary logs are cleaned up. Run with no other server or clients in the same queue namespace; the script refuses existing project queues. The manual multi-terminal procedures above remain available.
+
+## 19. Report Preparation
+
+No assignment specification or report source was present in the repository. The audit used the supplied requirements and rubric; confirm any instructor-specific report format separately. Use the following factual sources to assemble the report:
+
+| Required section | Evidence to include |
+| --- | --- |
+| Project Description | Twenty seats; client commands and reservation ownership rules in sections 1 and 5. |
+| System Architecture | Client/queue/worker/table diagram in section 2; all processes in one Linux container. |
+| Message Queue Design | Queue ownership, names, capacity, sizes, priority, and lifecycle in section 3. |
+| Message Structure | Native fields, enum values, fixed text buffer, ABI boundary in section 4 and `include/message.hpp`. |
+| Server Concurrency Model | Shared receive queue, runtime pthread count, stable worker-ID storage in sections 2 and 14. |
+| Shared Resource and Critical Section | `reservations[]`, `owner_id`, and each operation's boundaries in section 14. |
+| Cause of Race Condition | Multiple workers check the same available owner and later overwrite it; MQ does not lock application memory. |
+| Role of Random Delay | Same 50–500 ms check/update window in both concurrent experiments; held inside the mutex in sync mode. |
+| Synchronization Mechanism | One `reservations_mutex`; independent `log_mutex` remains enabled in both modes. |
+| Results of All Three Experiments | Experiment procedures, observed counts, and sequence-numbered excerpts in sections 10–12; add screenshots from the live demo. |
+| Limitations | Section 17; nondeterminism, deliberate unsafe mode, global lock, volatile state, queue lifetime/delivery. |
+| Future Improvements | Possible follow-up work: remove artificial delay for real use, persist state, add bounded response waits and request IDs for recovery; use finer locking only if measured throughput requires it. These are not implemented in this lab. |

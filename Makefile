@@ -1,5 +1,5 @@
 CXX ?= g++
-CXXFLAGS ?= -std=c++17 -Wall -Wextra
+CXXFLAGS ?= -std=c++17 -Wall -Wextra -Wpedantic
 LDLIBS ?= -lrt
 
 .PHONY: all clean rebuild
@@ -15,4 +15,5 @@ client: src/client.cpp include/message.hpp
 clean:
 	$(RM) server client
 
-rebuild: clean all
+rebuild: clean
+	$(MAKE) all

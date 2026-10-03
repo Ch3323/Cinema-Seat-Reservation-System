@@ -1,0 +1,8 @@
+.git
+.vscode
+server
+client
+*.o
+*.obj
+*.exe
+*.pdb

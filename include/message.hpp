@@ -1,5 +1,7 @@
 #pragma once
 
+#include <type_traits>
+
 enum class Command {
     LIST = 1,
     STATUS = 2,
@@ -19,3 +21,8 @@ struct ResponseMessage {
     bool success;
     char message[1024];
 };
+
+static_assert(std::is_trivially_copyable<RequestMessage>::value,
+              "RequestMessage must be trivially copyable");
+static_assert(std::is_trivially_copyable<ResponseMessage>::value,
+              "ResponseMessage must be trivially copyable");
