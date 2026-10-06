@@ -335,6 +335,36 @@ docker cp experiments.sh os-reservation:/app/experiments.sh
 
 On Linux, use `bash experiments.sh` from the project directory with a running server. The manual multi-terminal procedures above remain available.
 
+### Demo 1 — Different Commands at the Same Time
+
+In the server terminal, start a fresh server:
+
+```bash
+./server --workers 3 --sync
+```
+
+In a second terminal attached to the same container, run:
+
+```bash
+bash demo1.sh
+```
+
+| Client | Concurrent command |
+| --- | --- |
+| 1 | `LIST` |
+| 2 | `STATUS 1` |
+| 3 | `RESERVE 2` |
+| 4 | `CANCEL 3` |
+| 5 | `RESERVE 4` |
+
+The script sends only the five commands above concurrently, with no setup requests, and prints each response, including the full LIST. On a fresh server, `CANCEL 3` fails because Seat 3 is already available; the other four commands succeed. Execution order depends on scheduling; LIST may capture state before or after the reservation changes. QUIT any existing clients 1–5 before running it. Each scripted client exits with QUIT, and the server and container stay running. Existing reservations affect results when repeating the demo.
+
+For an existing container, copy the new script from the host first:
+
+```bash
+docker cp demo1.sh os-reservation:/app/demo1.sh
+```
+
 ## 19. Report Preparation
 
 No assignment specification or report source was present in the repository. The audit used the supplied requirements and rubric; confirm any instructor-specific report format separately. Use the following factual sources to assemble the report:
