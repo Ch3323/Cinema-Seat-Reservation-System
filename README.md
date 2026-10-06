@@ -155,7 +155,7 @@ Open five more terminals and run one unique client in each:
 ./client 5
 ```
 
-Have several clients submit `RESERVE 10`. With one worker, requests are processed sequentially even though clients may submit concurrently. One request succeeds and later requests observe that Seat 10 is already reserved; no worker race occurs.
+Have several clients submit `RESERVE 10`. With one worker, requests are processed sequentially even though clients may submit concurrently. The artificial random delay is disabled whenever the server has exactly one worker, in either sync mode. One request succeeds and later requests observe that Seat 10 is already reserved; no worker race occurs.
 
 Before each next experiment: finish pending commands, enter `QUIT` in every client terminal, press `Ctrl+C` in the server terminal, then start the new server and reopen clients 1–5. Restarting the server resets every seat to AVAILABLE. Reusing Seat 10 without resetting state will invalidate the experiment.
 
@@ -248,7 +248,7 @@ Reservation reservations[RESOURCE_COUNT];
 
 The reservation critical sections are:
 
-- `RESERVE`: check availability, perform the intentional delay, and update the owner.
+- `RESERVE`: check availability, perform the intentional delay when there is more than one worker, and update the owner.
 - `CANCEL`: read the owner and clear it when the requesting client owns it.
 - `STATUS`: copy the current owner.
 - `LIST`: copy all ownership values into a local snapshot.
@@ -302,7 +302,7 @@ docker rm -f os-reservation
 - The system is intended for a local Linux, WSL, or single-container Docker demonstration.
 - No persistent database is used.
 - Unsynchronized concurrent reads/writes are deliberately C++ data races (formally undefined behavior). Race reproduction is an observed property of the tested Linux build, not a guarantee for every scheduler, compiler, or optimization setting. Use `--sync` for correct operation.
-- The 50–500 ms delay is an experiment aid, not real reservation work. In sync mode it serializes all seat operations behind one global lock.
+- The 50–500 ms delay is an experiment aid, not real reservation work. It is disabled with one worker and remains enabled with multiple workers in both modes. In concurrent sync mode it serializes all seat operations behind one global lock.
 - Queue capacity is ten messages. A client sends one request and waits for one response; it has no response timeout or automatic recovery if the server exits or delivery fails. A completed reservation can outlive a lost response.
 - Queue names and client IDs are intended for trusted local processes. The native structures and internal stop request are not an authenticated or cross-platform protocol.
 - Forced termination requires explicit stale-queue cleanup. Clients must restart after the server restarts because existing descriptors refer to the old queue object.

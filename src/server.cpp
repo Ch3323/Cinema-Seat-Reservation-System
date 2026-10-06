@@ -25,6 +25,7 @@ using namespace std;
 mqd_t request_mq;
 Reservation reservations[RESOURCE_COUNT];
 bool sync_enabled;
+bool race_delay_enabled;
 pthread_mutex_t reservations_mutex = PTHREAD_MUTEX_INITIALIZER;
 pthread_mutex_t log_mutex = PTHREAD_MUTEX_INITIALIZER;
 unsigned long long log_sequence = 0; // Protected by log_mutex in both modes.
@@ -50,6 +51,7 @@ void log_worker(int worker_id, const string& message) {
 }
 
 void widen_race_window(int worker_id) {
+    if (!race_delay_enabled) return;
     thread_local mt19937 generator(random_device{}());
     thread_local uniform_int_distribution<int> delay_ms(50, 500);
     int delay = delay_ms(generator);
@@ -274,6 +276,7 @@ int main(int argc, char* argv[]) {
     }
 
     sync_enabled = string(argv[3]) == "--sync";
+    race_delay_enabled = worker_count > 1;
 
     for (int i = 0; i < RESOURCE_COUNT; i++) {
         reservations[i] = {i + 1, -1};
