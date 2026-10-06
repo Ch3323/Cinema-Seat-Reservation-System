@@ -117,6 +117,8 @@ Create one named, long-running demo container:
 docker run -dit --name os-reservation os-reservation
 ```
 
+Starting or restarting the container runs only `sleep infinity`. Docker provides the Linux environment; it does not start the server, any client, or the experiment script. Open terminals with `docker exec -it os-reservation bash`, then launch the server and clients yourself as shown below. Experiment scripts run only when you explicitly invoke them.
+
 If that name already belongs to an old, stopped demo container, remove the old container with `docker rm os-reservation` before creating the new one. A rebuilt image does not update an existing container; recreate the demo container to use changed source.
 
 The standard Linux Docker runtime provides `/dev/mqueue` inside the container. No privileged mode or host IPC namespace is required because the server and all clients run in the same container. Verify the mount with:
@@ -307,22 +309,31 @@ docker rm -f os-reservation
 
 ## 18. Experiment Script
 
-Run all three experiments automatically in a fresh temporary container:
+Use the named container created in section 8. If it is stopped, start it with `docker start os-reservation`. Open its terminal:
 
 ```bash
-docker build -t os-reservation .
-docker run --rm os-reservation bash experiments.sh
+docker exec -it os-reservation bash
 ```
 
-To run only one experiment, pass `1`, `2`, or `3`:
+Start the server for the desired experiment in one terminal. Run the same client-only script in a second container terminal for every experiment:
+
+| Experiment | Server terminal | Second terminal |
+| --- | --- | --- |
+| 1 | `./server --workers 1 --no-sync` | `bash experiments.sh` |
+| 2 | `./server --workers 3 --no-sync` | `bash experiments.sh` |
+| 3 | `./server --workers 3 --sync` | `bash experiments.sh` |
+
+The script takes no arguments and only runs clients. It does not build programs, start or stop the server, change its mode, or manage containers. Server logs appear live in the server terminal; client results appear in the second terminal. QUIT any existing clients 1–5 first, since the script uses their IDs. It checks that Seat 10 starts AVAILABLE, launches five clients concurrently to send `RESERVE 10` followed by `QUIT`, displays the SUCCESS/FAILED counts, then uses STATUS to show the final owner. It cleans up its client processes, response queues, and temporary logs, leaving the server and container running.
+
+Restart the server before each experiment to reset Seat 10. Experiments 1 and 3 should produce one success and four failures. Experiment 2 may produce multiple successes; confirm multiple AVAILABLE checks in the server logs. If the race is not observed, restart the server and run the same script again. The script reports actual results without claiming which server mode is active.
+
+If the existing container has an older script, update it from the host before opening the terminal:
 
 ```bash
-docker run --rm os-reservation bash experiments.sh 1
-docker run --rm os-reservation bash experiments.sh 2
-docker run --rm os-reservation bash experiments.sh 3
+docker cp experiments.sh os-reservation:/app/experiments.sh
 ```
 
-On Linux, run `bash experiments.sh` from the project directory. The script builds the programs, starts a fresh server for each experiment, launches five clients concurrently to reserve Seat 10, displays server logs and client results, and checks the final owner with STATUS. Experiments 1 and 3 require one success and four failures. Experiment 2 retries up to five times and reports if the race was not observed without treating nondeterminism as a test failure. All test processes, queues, and temporary logs are cleaned up. Run with no other server or clients in the same queue namespace; the script refuses existing project queues. The manual multi-terminal procedures above remain available.
+On Linux, use `bash experiments.sh` from the project directory with a running server. The manual multi-terminal procedures above remain available.
 
 ## 19. Report Preparation
 
