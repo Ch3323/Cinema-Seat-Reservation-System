@@ -28,7 +28,7 @@ bool sync_enabled;
 bool race_delay_enabled;
 pthread_mutex_t reservations_mutex = PTHREAD_MUTEX_INITIALIZER;
 pthread_mutex_t log_mutex = PTHREAD_MUTEX_INITIALIZER;
-unsigned long long log_sequence = 0; // Protected by log_mutex in both modes.
+unsigned long long log_sequence = 0;
 
 const char* command_name(Command command) {
     switch (command) {
@@ -106,7 +106,6 @@ void* worker(void* argument) {
         log_worker(worker_id, request_log);
 
         string response_queue_name = "/response_" + to_string(request.client_id);
-        // An abandoned/full response queue must not block a worker or shutdown.
         mqd_t response_mq = mq_open(response_queue_name.c_str(), O_WRONLY | O_NONBLOCK);
         if (response_mq == (mqd_t)-1) {
             log_worker(worker_id, "response mq_open: " + string(strerror(errno)));
@@ -264,7 +263,6 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    // Sized before creation and never reallocated; IDs outlive every worker.
     vector<pthread_t> workers;
     vector<int> worker_ids;
     try {
@@ -348,8 +346,6 @@ int main(int argc, char* argv[]) {
         }
         if (send_result == -1) {
             log_worker(0, "Worker shutdown send: " + string(strerror(errno)));
-            // Cannot safely join workers we could not wake. Process exit closes
-            // descriptors and terminates them; do not destroy their live mutexes.
             if (mq_unlink(queue_name) == -1) perror("request mq_unlink");
             _Exit(1);
         }
