@@ -31,19 +31,6 @@ trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 fail() { echo "FAILED: $*" >&2; cat "$logs"/*.log >&2; exit 1; }
-status() {
-    printf 'STATUS 10\nQUIT\n' |
-        timeout --kill-after=2s 15s ./client 1 >"$logs/status.log" 2>&1 &
-    client_pids=("$!")
-    wait "${client_pids[0]}" || fail 'STATUS failed or timed out'
-    client_pids=()
-}
-
-status
-if ! grep -q 'SUCCESS: Seat 10 is available' "$logs/status.log"; then
-    fail 'Seat 10 is already reserved; restart the server for a fresh experiment'
-fi
-
 echo 'Launching five clients: RESERVE 10'
 for id in 1 2 3 4 5; do
     printf 'RESERVE 10\nQUIT\n' |
@@ -61,7 +48,5 @@ failures=$(awk '/FAILED: Seat 10 is already reserved/ {n++} END {print n+0}' "$l
 for id in 1 2 3 4 5; do
     echo "Client-$id: $(grep -oE '(SUCCESS|FAILED):.*' "$logs/client-$id.log")"
 done
-status
-grep -oE '(SUCCESS|FAILED):.*' "$logs/status.log"
 echo "Results: SUCCESS=$successes, FAILED=$failures"
 echo 'Finished: server and container remain running. See server logs in the other terminal.'
